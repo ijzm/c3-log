@@ -3,6 +3,18 @@ module log;
 import std::io;
 import std::time::datetime;
 import std::collections::list;
+import libc;
+
+/*
+Custom Naive implementation of isatty
+Because it doesn't work correctly on Windows
+*/
+fn bool isatty(File* fp) {
+	if(env::WIN32) {
+		return (fp == io::stdout() || fp == io::stderr());
+	}
+	return (bool)libc::isatty(libc::fileno(fp.file));
+}
 
 enum Terminal_Color : int (String value) {
 	BLACK          = "\x1B[30m",
@@ -60,6 +72,7 @@ enum Log_Level : int (Terminal_Color color, Terminal_Background background){
 
 enum Log_Format_Spec {
 	NONE,
+	MESSAGE,
 
 	COLOR,
 	BACKGROUND,
@@ -68,34 +81,43 @@ enum Log_Format_Spec {
 	LINE,
 	FUNC,
 
-	MESSAGE,
-/*
+
 	ISO8601,
+
 	YYYY,
 	MM,
 	DD,
-	
-	HH_24,
-	HH_12,
-	MINUTE,
-	SECOND,
-	MILISECOND,
-*/
+
+	THH,
+	T12HH,
+	TMM,
+	TSS,
+	TFF,
+	TAA,
 }
 
-const int MAX_LOG_LIST_SIZE = 32;
+const int MAX_FORMAT_SPEC_SIZE = 32;
+const int MAX_FORMAT_SIZE      = 1024;
+const int MAX_FILE_HANDLERS    = 32;
 
 struct Log {
-	Log_Level                          level;
-	Log_Format_Spec[MAX_LOG_LIST_SIZE] spec;
-	int                                count;
-	String                             format;
+	Log_Level                             level;
+	Log_Format_Spec[MAX_FORMAT_SPEC_SIZE] spec;
+	int                                   count;
+	char[MAX_FORMAT_SIZE]                 format;
+	bool                                  local_timezone;
+
+	File*[MAX_FILE_HANDLERS]               handlers;
+	int                                    handlers_count;
 }
 
 Log global_log;
 
 fn void initialize_log() @init {
 	global_log.level = Log_Level.TRACE;
+	global_log.local_timezone = true;
+	global_log.handlers[0] = io::stdout();
+	global_log.handlers_count = 1;
 	set_format("%COLORs%BACKGROUNDs[%LEVEL5.5s] %FILEs:%LINEs [%FUNCs]: %MESSAGEs");
 }
 
@@ -113,8 +135,7 @@ fn void set_format(String fmt) {
 		switch(fmt[i]) {
 			case '%': {
 				if((fmt[i+1..]).starts_with("%")) {
-					i += 1;
-
+					i++;
 					new_format.append_chars("%%");
 					continue;
 				}
@@ -132,50 +153,101 @@ fn void set_format(String fmt) {
 		}
 	}
 
-	global_log.format = new_format.str_view();
+	mem::set(&global_log.format, 0, MAX_FORMAT_SIZE);
+	mem::copy(&global_log.format, new_format.zstr_view(), new_format.len());
 	global_log.count = element_index;
 }
 
 fn void _log_print(Log_Level level, String file, int line, String func, String format, args...) @private {
+	for(int i = 0; i < global_log.handlers_count; i++) {
+		_log_print_single(
+			global_log.handlers[i],
+			level,
+			file,
+			line,
+			func,
+			format,
+			...args
+		);
+	}
+}
+
+
+fn void _log_print_single(File* fp, Log_Level level, String file, int line, String func, String format, args...) @private {
 	if(global_log.level > level) {
 		return;
 	}
-	//TzDateTime now = datetime::now().to_local();
+	TzDateTime now = datetime::now().with_gmt_offset(0);
+	if(global_log.local_timezone) {
+		now = now.to_local();
+	}
 
 	DString buffer;
 	defer buffer.free();
-
-	
 
 	List(<any>) list_str;
 	list_str.new_init();
 	defer list_str.free();
 
-	for (int i = 0; i < MAX_LOG_LIST_SIZE; i++) {
+	DString value_buffer;
+	defer value_buffer.free();
+	value_buffer.appendf(format, ...args);
+
+	for (int i = 0; i < MAX_FORMAT_SPEC_SIZE; i++) {
 		switch (global_log.spec[i]) {
-			case NONE:    list_str.push(&&"");
-			case MESSAGE: {
-				DString value_buffer;
-				defer value_buffer.free();
+			case NONE:       list_str.push(&&"");
+			case MESSAGE:    list_str.push(&&value_buffer.str_view());
 
-				value_buffer.appendf(format, ...args);
-				list_str.push(&&value_buffer.str_view());
-			};
-
-			case COLOR:      list_str.push(&level.color.value);
-			case BACKGROUND: list_str.push(&level.background.value);
+			case COLOR:      {
+				if(isatty(fp)){
+					list_str.push(&level.color.value);
+				} else {
+					list_str.push(&&"");
+				}
+			}
+			case BACKGROUND: {
+				if(isatty(fp)){
+					list_str.push(&level.background.value);
+				} else {
+					list_str.push(&&"");
+				}
+			}
 			case LEVEL:      list_str.push(&&level.nameof);
 			case FILE:       list_str.push(&file);
 			case FUNC:       list_str.push(&func);
 			case LINE:       list_str.push(&&line);
 
+			case ISO8601: {
+				String t = now.temp_format(DateTimeFormat.DATETIME);
+
+				list_str.push(&&t);
+			}
+
+			case YYYY: list_str.push(&&now.year);
+			case MM:   list_str.push(&&now.month.ordinal + 1);
+			case DD:   list_str.push(&&now.day);
+
+			case THH:   list_str.push(&&now.hour);
+			case T12HH: {
+				if (now.hour > 12) {
+					list_str.push(&&(now.hour - 12));
+				} else {
+					list_str.push(&&now.hour);
+				}
+			}
+			case TMM:   list_str.push(&&now.min);
+			case TSS:   list_str.push(&&now.sec);
+			case TFF:   list_str.push(&&now.usec);
+			case TAA: {
+				if (now.hour > 12) {
+					list_str.push(&&"PM");
+				} else {
+					list_str.push(&&"AM");
+				}
+			}
+
+
 			/*
-
-			case ISO8601: io::fprint(values[i], "");
-
-			case YYYY: io::fprint(values[i], "");
-			case MM:   io::fprint(values[i], "");
-			case DD:   io::fprint(values[i], "");
 			
 			case HH_24:      io::fprint(values[i], "");
 			case HH_12:      io::fprint(values[i], "");
@@ -185,18 +257,23 @@ fn void _log_print(Log_Level level, String file, int line, String func, String f
 		}
 	}
 
+	DString format_buffer;
+	defer format_buffer.free();
+	format_buffer.appendf("%s", (ZString)global_log.format[..]);
 	buffer.appendf(
-		global_log.format,
-		...list_str.to_tarray()[:MAX_LOG_LIST_SIZE],
+		format_buffer.str_view(),
+		...list_str.to_tarray()[:MAX_FORMAT_SPEC_SIZE],
 	);
 
-	buffer.appendf(
-		"%s%s",
-		Terminal_Color.RESET.value,
-		Terminal_Background.RESET.value,
-	);
+	if(isatty(fp)) {
+		buffer.appendf(
+			"%s%s",
+			Terminal_Color.RESET.value,
+			Terminal_Background.RESET.value,
+		);
+	}
 
-	io::printn(buffer.str_view());
+	io::fprintn(fp, buffer.str_view())!!;
 }
 	
 
