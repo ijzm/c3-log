@@ -10,10 +10,11 @@ Custom Naive implementation of isatty
 Because it doesn't work correctly on Windows
 */
 fn bool isatty(File* fp) {
-	if(env::WIN32) {
+	$if env::WIN32:
 		return (fp == io::stdout() || fp == io::stderr());
-	}
-	return (bool)libc::isatty(libc::fileno(fp.file));
+	$else
+		return (bool)libc::isatty(libc::fileno(fp.file));
+	$endif
 }
 
 enum Terminal_Color : int (String value) {
@@ -60,6 +61,7 @@ enum Terminal_Background : int (String value) {
 	RESET          = "\x1B[49m",
 }
 
+//TODO: This is default, add way to customize
 enum Log_Level : int (Terminal_Color color, Terminal_Background background){
 	TRACE = { Terminal_Color.RESET, Terminal_Background.RESET },
 	DEBUG = { Terminal_Color.GREEN, Terminal_Background.RESET },
@@ -80,7 +82,6 @@ enum Log_Format_Spec {
 	FILE,
 	LINE,
 	FUNC,
-
 
 	ISO8601,
 
@@ -103,7 +104,7 @@ const int MAX_FILE_HANDLERS    = 32;
 struct Log {
 	Log_Level                             level;
 	Log_Format_Spec[MAX_FORMAT_SPEC_SIZE] spec;
-	int                                   count;
+	int                                   spec_count;
 	char[MAX_FORMAT_SIZE]                 format;
 	bool                                  local_timezone;
 
@@ -116,9 +117,16 @@ Log global_log;
 fn void initialize_log() @init {
 	global_log.level = Log_Level.TRACE;
 	global_log.local_timezone = true;
-	global_log.handlers[0] = io::stdout();
-	global_log.handlers_count = 1;
+	add_handler(io::stdout());
 	set_format("%COLORs%BACKGROUNDs[%LEVEL5.5s] %FILEs:%LINEs [%FUNCs]: %MESSAGEs");
+}
+
+fn void add_handler(File* fp) {
+	global_log.handlers[global_log.handlers_count++] = fp;
+}
+
+fn void clear_handlers() {
+	global_log.handlers_count = 0;
 }
 
 fn void set_level(Log_Level level) {
@@ -155,7 +163,7 @@ fn void set_format(String fmt) {
 
 	mem::set(&global_log.format, 0, MAX_FORMAT_SIZE);
 	mem::copy(&global_log.format, new_format.zstr_view(), new_format.len());
-	global_log.count = element_index;
+	global_log.spec_count = element_index;
 }
 
 fn void _log_print(Log_Level level, String file, int line, String func, String format, args...) @private {
@@ -245,15 +253,6 @@ fn void _log_print_single(File* fp, Log_Level level, String file, int line, Stri
 					list_str.push(&&"AM");
 				}
 			}
-
-
-			/*
-			
-			case HH_24:      io::fprint(values[i], "");
-			case HH_12:      io::fprint(values[i], "");
-			case MINUTE:     io::fprint(values[i], "");
-			case SECOND:     io::fprint(values[i], "");
-			case MILISECOND: io::fprint(values[i], "");*/
 		}
 	}
 
@@ -276,7 +275,6 @@ fn void _log_print_single(File* fp, Log_Level level, String file, int line, Stri
 	io::fprintn(fp, buffer.str_view())!!;
 }
 	
-
 macro trace(format, args...) {
 	_log_print(Log_Level.TRACE, $$FILE, $$LINE, $$FUNC, format, ...args );
 }
