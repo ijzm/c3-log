@@ -1,6 +1,7 @@
 module log;
 
 import std::io;
+import std::time::datetime;
 import std::collections::list;
 
 enum Terminal_Color : int (String value) {
@@ -58,79 +59,136 @@ enum Log_Level : int (Terminal_Color color, Terminal_Background background){
 }
 
 enum Log_Format_Spec {
+	NONE,
+
 	COLOR,
 	BACKGROUND,
 	LEVEL,
 	FILE,
 	LINE,
 	FUNC,
+
 	MESSAGE,
+/*
+	ISO8601,
+	YYYY,
+	MM,
+	DD,
+	
+	HH_24,
+	HH_12,
+	MINUTE,
+	SECOND,
+	MILISECOND,
+*/
 }
 
-// Defaults (Global):
-Log_Level log_level  = Log_Level.TRACE;
-String log_format = "%COLORs%BACKGROUNDs[%LEVEL5.5s] %FILEs:%LINEs [%FUNCs]: %MESSAGEs";
+const int MAX_LOG_LIST_SIZE = 32;
+
+struct Log {
+	Log_Level                          level;
+	Log_Format_Spec[MAX_LOG_LIST_SIZE] spec;
+	int                                count;
+	String                             format;
+}
+
+Log global_log;
+
+fn void initialize_log() @init {
+	global_log.level = Log_Level.TRACE;
+	set_format("%COLORs%BACKGROUNDs[%LEVEL5.5s] %FILEs:%LINEs [%FUNCs]: %MESSAGEs");
+}
 
 fn void set_level(Log_Level level) {
-	log_level = level;
+	global_log.level = level;
 }
 
-fn void set_format(String new_fmt) {
-	log_format = new_fmt;
-}
+fn void set_format(String fmt) {
+	DString new_format;
+	defer new_format.free();
 
-fn void _log_print(Log_Level level, String file, int line, String func, String format, args...) @private {
-	if(log_level > level) {
-		return;
-	}
+	int element_index = 0;
 
-	DString buffer;
-	defer buffer.free();
-
-	DString format_buffer;
-	defer format_buffer.free();
-
-	String message = string::new_format(format, ...args);
-	defer message.free();
-
-	for(int i = 0; i < log_format.len; i++) {
-		switch(log_format[i]) {
+	for(int i = 0; i < fmt.len; i++) {
+		switch(fmt[i]) {
 			case '%': {
-				if((log_format[i+1..]).starts_with("%")) {
+				if((fmt[i+1..]).starts_with("%")) {
 					i += 1;
 
-					buffer.appendf("%s", "%%");
+					new_format.append_chars("%%");
 					continue;
 				}
 				foreach (Log_Format_Spec element : Log_Format_Spec.values) {
-					if((log_format[i+1..]).starts_with(element.nameof)) {
-						format_buffer.clear();
+					if((fmt[i+1..]).starts_with(element.nameof)) {
+						new_format.append_char('%');
 						i += element.nameof.len;
-
-						format_buffer.appendf("%s", "%");
-						usz format_index = log_format.index_of_char_from('s', (usz)(i + 1))!!;
-						format_buffer.appendf("%s", log_format[i + 1..format_index]);
-
-						String new_format = format_buffer.str_view();
-						i += new_format.len - 1;
-
-						switch (element) {
-							case COLOR:      buffer.appendf(new_format, level.color.value);
-							case BACKGROUND: buffer.appendf(new_format, level.background.value);
-							case LEVEL:      buffer.appendf(new_format, level);
-							case FILE:       buffer.appendf(new_format, file);
-							case LINE:       buffer.appendf(new_format, line);
-							case FUNC:       buffer.appendf(new_format, func);
-							case MESSAGE:    buffer.appendf(new_format, message);
-						}
+						global_log.spec[element_index++] = element;
 					}
 				}
 			}
 			default: {
-				buffer.append_char(log_format[i]);
+				new_format.append_char(fmt[i]);
 			}
 		}
 	}
+
+	global_log.format = new_format.str_view();
+	global_log.count = element_index;
+}
+
+fn void _log_print(Log_Level level, String file, int line, String func, String format, args...) @private {
+	if(global_log.level > level) {
+		return;
+	}
+	//TzDateTime now = datetime::now().to_local();
+
+	DString buffer;
+	defer buffer.free();
+
+	
+
+	List(<any>) list_str;
+	list_str.new_init();
+	defer list_str.free();
+
+	for (int i = 0; i < MAX_LOG_LIST_SIZE; i++) {
+		switch (global_log.spec[i]) {
+			case NONE:    list_str.push(&&"");
+			case MESSAGE: {
+				DString value_buffer;
+				defer value_buffer.free();
+
+				value_buffer.appendf(format, ...args);
+				list_str.push(&&value_buffer.str_view());
+			};
+
+			case COLOR:      list_str.push(&level.color.value);
+			case BACKGROUND: list_str.push(&level.background.value);
+			case LEVEL:      list_str.push(&&level.nameof);
+			case FILE:       list_str.push(&file);
+			case FUNC:       list_str.push(&func);
+			case LINE:       list_str.push(&&line);
+
+			/*
+
+			case ISO8601: io::fprint(values[i], "");
+
+			case YYYY: io::fprint(values[i], "");
+			case MM:   io::fprint(values[i], "");
+			case DD:   io::fprint(values[i], "");
+			
+			case HH_24:      io::fprint(values[i], "");
+			case HH_12:      io::fprint(values[i], "");
+			case MINUTE:     io::fprint(values[i], "");
+			case SECOND:     io::fprint(values[i], "");
+			case MILISECOND: io::fprint(values[i], "");*/
+		}
+	}
+
+	buffer.appendf(
+		global_log.format,
+		...list_str.to_tarray()[:MAX_LOG_LIST_SIZE],
+	);
 
 	buffer.appendf(
 		"%s%s",
@@ -138,7 +196,7 @@ fn void _log_print(Log_Level level, String file, int line, String func, String f
 		Terminal_Background.RESET.value,
 	);
 
-	io::printfn(buffer.str_view());
+	io::printn(buffer.str_view());
 }
 	
 
