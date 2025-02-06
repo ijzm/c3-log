@@ -28,7 +28,8 @@ By default, just call any of the log functions:
 import log;
 
 fn void main() {
-	log::debug("Hello World!");
+	//Logs "Hello World 42" using default format to stdout
+	log::debug("Hello World! %s", 42);
 }
 ```
 
@@ -90,7 +91,9 @@ log::debug("Hello World");
 ```
 
 ## File Handlers
-By default, the library logs to `stdout`. You can change this behavior with `log::add_handler(File* fp)` and `log::clear_handlers()`
+By default, the library logs to `stdout`.
+
+You can change this behavior with `log::add_handler(File* fp)` and `log::clear_handlers()`
 
 ```c++
 log::debug("This message will be shown ONLY in stdout");
